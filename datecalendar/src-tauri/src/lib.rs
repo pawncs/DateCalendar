@@ -5,6 +5,7 @@ mod commands;
 use db::connection::init_pool;
 use db::migrations::run_migrations;
 use services::task_service::TaskService;
+use services::schedule_service::ScheduleService;
 use tauri::Manager;
 
 /// DateCalendar Tauri 应用入口
@@ -44,8 +45,10 @@ pub fn run() {
             }
 
             // 创建服务实例，注入 Tauri 状态管理
-            let task_service = TaskService::new(pool);
+            let task_service = TaskService::new(pool.clone());
+            let schedule_service = ScheduleService::new(pool);
             app.manage(task_service);
+            app.manage(schedule_service);
 
             log::info!("DateCalendar 初始化完成");
             Ok(())
@@ -63,6 +66,21 @@ pub fn run() {
             commands::task_commands::get_notes,
             commands::task_commands::save_note,
             commands::task_commands::delete_note,
+            commands::task_commands::reorder_task,
+            commands::task_commands::batch_update_tasks,
+            commands::task_commands::batch_delete_tasks,
+            commands::task_commands::batch_move_tasks,
+            commands::schedule_commands::get_all_schedules,
+            commands::schedule_commands::get_schedule,
+            commands::schedule_commands::get_schedules_in_range,
+            commands::schedule_commands::get_schedules_by_task,
+            commands::schedule_commands::get_day_schedules,
+            commands::schedule_commands::get_week_schedules,
+            commands::schedule_commands::create_schedule,
+            commands::schedule_commands::update_schedule,
+            commands::schedule_commands::delete_schedule,
+            commands::schedule_commands::update_schedule_status,
+            commands::schedule_commands::check_conflicts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

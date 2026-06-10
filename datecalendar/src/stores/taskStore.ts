@@ -1,6 +1,20 @@
 import { create } from 'zustand'
-import { invoke } from '@tauri-apps/api/core'
-import type { Task, CreateTaskInput, UpdateTaskInput, MilestoneRisk, Note } from '@/types/task'
+import { adapter } from '@/adapters'
+import type { Task, CreateTaskInput, UpdateTaskInput, MilestoneRisk, Note, TaskStatus, Priority } from '@/types/task'
+
+// 筛选条件
+export interface TaskFilter {
+  statuses: TaskStatus[]
+  minPriority: Priority
+  searchQuery: string
+}
+
+// 默认筛选（全部显示）
+const defaultFilter: TaskFilter = {
+  statuses: [],
+  minPriority: 0,
+  searchQuery: '',
+}
 
 interface TaskState {
   // 数据
@@ -12,6 +26,13 @@ interface TaskState {
   loading: boolean
   error: string | null
 
+  // 筛选
+  filter: TaskFilter
+
+  // 批量选择
+  selectionMode: boolean
+  selectedIds: Set<string>
+
   // 操作
   loadTasks: () => Promise<void>
   selectTask: (id: string | null) => void
@@ -22,6 +43,22 @@ interface TaskState {
   createTask: (input: CreateTaskInput) => Promise<Task>
   updateTask: (id: string, input: UpdateTaskInput) => Promise<Task>
   deleteTask: (id: string) => Promise<void>
+
+  // 排序
+  reorderTask: (taskId: string, newParentId: string | null, newSortOrder: number) => Promise<void>
+
+  // 筛选
+  setFilter: (filter: Partial<TaskFilter>) => void
+  clearFilter: () => void
+  getFilteredTasks: () => Task[]
+
+  // 批量操作
+  enterSelectionMode: () => void
+  exitSelectionMode: () => void
+  toggleSelection: (id: string) => void
+  batchComplete: () => Promise<void>
+  batchDelete: () => Promise<void>
+  batchMove: (newParentId: string | null) => Promise<void>
 
   // 风险
   loadRisks: (taskId: string) => Promise<MilestoneRisk[]>
@@ -43,11 +80,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   expandedIds: new Set<string>(),
   loading: false,
   error: null,
+  filter: { ...defaultFilter },
+  selectionMode: false,
+  selectedIds: new Set<string>(),
 
   loadTasks: async () => {
     set({ loading: true, error: null })
     try {
-      const tasks = await invoke<Task[]>('get_all_tasks')
+      const tasks = await adapter.get_all_tasks()
       set({ tasks, loading: false })
     } catch (e) {
       set({ error: String(e), loading: false })
@@ -76,52 +116,156 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   createTask: async (input) => {
-    const task = await invoke<Task>('create_task', { input })
+    const task = await adapter.create_task(input)
     await get().loadTasks()
     return task
   },
 
   updateTask: async (id, input) => {
-    const task = await invoke<Task>('update_task', { id, ...input })
+    const task = await adapter.update_task(
+      id, input.title, input.description, input.status,
+      input.priority, input.color, input.is_milestone,
+      input.parent_id, input.sort_order,
+    )
     await get().loadTasks()
     return task
   },
 
   deleteTask: async (id) => {
-    await invoke('delete_task', { id })
-    // 如果删除的是当前选中的任务，清除选中状态
+    await adapter.delete_task(id)
     if (get().selectedTaskId === id) {
       set({ selectedTaskId: null })
     }
     await get().loadTasks()
   },
 
+  reorderTask: async (taskId, newParentId, newSortOrder) => {
+    await adapter.reorder_task(taskId, newParentId, newSortOrder)
+    await get().loadTasks()
+  },
+
+  // ===== 筛选 =====
+
+  setFilter: (partial) => {
+    set((s) => ({ filter: { ...s.filter, ...partial } }))
+  },
+
+  clearFilter: () => {
+    set({ filter: { ...defaultFilter } })
+  },
+
+  getFilteredTasks: () => {
+    const { tasks, filter } = get()
+    let result = tasks
+
+    // 按状态筛选
+    if (filter.statuses.length > 0) {
+      result = result.filter((t) => filter.statuses.includes(t.status))
+    }
+
+    // 按优先级筛选（>= minPriority）
+    if (filter.minPriority > 0) {
+      result = result.filter((t) => t.priority >= filter.minPriority)
+    }
+
+    // 按关键词搜索
+    if (filter.searchQuery.trim()) {
+      const q = filter.searchQuery.trim().toLowerCase()
+      result = result.filter(
+        (t) => t.title.toLowerCase().includes(q) || t.description.toLowerCase().includes(q)
+      )
+    }
+
+    // 保留祖先节点以维持树形结构
+    if (filter.statuses.length > 0 || filter.minPriority > 0 || filter.searchQuery.trim()) {
+      const matchedIds = new Set(result.map((t) => t.id))
+      // 向上查找所有祖先
+      for (const task of tasks) {
+        let current: Task | undefined = task
+        while (current) {
+          if (matchedIds.has(current.id)) {
+            // 标记所有祖先
+            let ancestor = tasks.find((t) => t.id === task.id)
+            while (ancestor) {
+              matchedIds.add(ancestor.id)
+              ancestor = ancestor.parent_id ? tasks.find((t) => t.id === ancestor!.parent_id) : undefined
+            }
+            break
+          }
+          current = current.parent_id ? tasks.find((t) => t.id === current!.parent_id) : undefined
+        }
+      }
+      result = tasks.filter((t) => matchedIds.has(t.id))
+    }
+
+    return result
+  },
+
+  // ===== 批量操作 =====
+
+  enterSelectionMode: () => set({ selectionMode: true, selectedIds: new Set() }),
+  exitSelectionMode: () => set({ selectionMode: false, selectedIds: new Set() }),
+
+  toggleSelection: (id) => {
+    const selected = new Set(get().selectedIds)
+    if (selected.has(id)) {
+      selected.delete(id)
+    } else {
+      selected.add(id)
+    }
+    set({ selectedIds: selected })
+  },
+
+  batchComplete: async () => {
+    const ids = Array.from(get().selectedIds)
+    if (ids.length === 0) return
+    await adapter.batch_update_tasks(ids, 'completed')
+    set({ selectionMode: false, selectedIds: new Set() })
+    await get().loadTasks()
+  },
+
+  batchDelete: async () => {
+    const ids = Array.from(get().selectedIds)
+    if (ids.length === 0) return
+    await adapter.batch_delete_tasks(ids)
+    set({ selectionMode: false, selectedIds: new Set() })
+    await get().loadTasks()
+  },
+
+  batchMove: async (newParentId) => {
+    const ids = Array.from(get().selectedIds)
+    if (ids.length === 0) return
+    await adapter.batch_move_tasks(ids, newParentId)
+    set({ selectionMode: false, selectedIds: new Set() })
+    await get().loadTasks()
+  },
+
   loadRisks: async (taskId) => {
-    return invoke<MilestoneRisk[]>('get_risks', { taskId })
+    return adapter.get_risks(taskId)
   },
 
   addRisk: async (taskId, riskDesc, probability, mitigation) => {
-    return invoke<MilestoneRisk>('add_risk', { taskId, riskDesc, probability, mitigation })
+    return adapter.add_risk(taskId, riskDesc, probability, mitigation)
   },
 
   deleteRisk: async (riskId) => {
-    await invoke('delete_risk', { riskId })
+    await adapter.delete_risk(riskId)
   },
 
   loadNotes: async (taskId) => {
-    return invoke<Note[]>('get_notes', { taskId })
+    return adapter.get_notes(taskId)
   },
 
   saveNote: async (taskId, noteId, title, content) => {
-    return invoke<Note>('save_note', { taskId, noteId, title, content })
+    return adapter.save_note(taskId, noteId, title, content)
   },
 
   deleteNote: async (noteId) => {
-    await invoke('delete_note', { noteId })
+    await adapter.delete_note(noteId)
   },
 
   searchTasks: async (query) => {
-    return invoke<Task[]>('search_tasks', { query })
+    return adapter.search_tasks(query)
   },
 }))
 

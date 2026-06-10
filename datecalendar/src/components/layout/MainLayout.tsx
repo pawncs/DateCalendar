@@ -4,6 +4,7 @@ import { useSettingsStore } from '@/stores/settingsStore'
 import { useUIStore } from '@/stores/uiStore'
 import { TaskTree } from '@/components/tasks/TaskTree'
 import { TaskEditor } from '@/components/tasks/TaskEditor'
+import { CalendarView } from '@/components/calendar/CalendarView'
 
 export function MainLayout() {
   const { theme, setTheme } = useSettingsStore()
@@ -74,11 +75,7 @@ export function MainLayout() {
       {/* 右侧：任务详情 / 日历视图 / 设置 */}
       <main className="flex-1 flex flex-col min-w-0">
         {sidebarView === 'tasks' && <TaskEditor />}
-        {sidebarView === 'calendar' && (
-          <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
-            日程视图 — 即将实现
-          </div>
-        )}
+        {sidebarView === 'calendar' && <CalendarView />}
         {sidebarView === 'settings' && (
           <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
             设置 — 即将实现

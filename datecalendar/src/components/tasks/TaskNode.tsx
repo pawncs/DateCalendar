@@ -1,23 +1,26 @@
 import { useState } from 'react'
 import {
   ChevronRight, ChevronDown, Star,
-  Plus, Trash2, Flag
+  Plus, Trash2, Flag, GripVertical
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/checkbox'
 import { useTaskStore, getTaskDepth } from '@/stores/taskStore'
 import type { Task, Priority } from '@/types/task'
+import { useSortable } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 
 interface TaskNodeProps {
   task: Task
   depth?: number
+  isDragActive?: boolean
 }
 
 const priorityColors: Record<Priority, string> = {
-  0: '',                    // 无优先级
-  1: 'text-blue-400',       // 低
-  2: 'text-yellow-400',     // 中
-  3: 'text-red-400',        // 高
+  0: '',
+  1: 'text-blue-400',
+  2: 'text-yellow-400',
+  3: 'text-red-400',
 }
 
 const statusColors: Record<string, string> = {
@@ -27,17 +30,35 @@ const statusColors: Record<string, string> = {
   cancelled: 'border-red-400/50',
 }
 
-export function TaskNode({ task, depth = 0 }: TaskNodeProps) {
-  const { selectedTaskId, selectTask, toggleExpand, expandedIds,
-    updateTask, deleteTask, createTask, tasks } = useTaskStore()
+export function TaskNode({ task, depth = 0, isDragActive }: TaskNodeProps) {
+  const {
+    selectedTaskId, selectTask, toggleExpand, expandedIds,
+    updateTask, deleteTask, createTask, tasks,
+    selectionMode, selectedIds, toggleSelection,
+  } = useTaskStore()
   const [isHovered, setIsHovered] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [editTitle, setEditTitle] = useState(task.title)
+
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: task.id })
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  }
 
   const isExpanded = expandedIds.has(task.id)
   const isSelected = selectedTaskId === task.id
   const hasChildren = task.children && task.children.length > 0
   const actualDepth = depth || getTaskDepth(tasks, task.id)
+  const isChecked = selectedIds.has(task.id)
 
   const handleToggleStatus = async () => {
     const newStatus = task.status === 'completed' ? 'pending' : 'completed'
@@ -56,13 +77,12 @@ export function TaskNode({ task, depth = 0 }: TaskNodeProps) {
       parent_id: task.id,
       title: '新子任务',
     })
-    // 展开父节点以显示新子任务
     toggleExpand(task.id)
     selectTask(newTask.id)
   }
 
   return (
-    <div>
+    <div ref={setNodeRef} style={style}>
       <div
         className={cn(
           'group flex items-center gap-1 px-2 py-1.5 rounded-md cursor-pointer transition-colors border-l-[3px]',
@@ -70,13 +90,31 @@ export function TaskNode({ task, depth = 0 }: TaskNodeProps) {
             ? 'bg-accent text-accent-foreground border-l-primary'
             : 'hover:bg-accent/50 border-l-transparent',
           task.status === 'completed' && 'opacity-60',
+          isDragging && 'opacity-50 bg-accent/30',
+          isDragActive && 'ring-2 ring-primary/50',
           statusColors[task.status] || 'border-l-transparent'
         )}
         style={{ paddingLeft: `${actualDepth * 20 + 8}px` }}
-        onClick={() => selectTask(task.id)}
+        onClick={() => {
+          if (selectionMode) {
+            toggleSelection(task.id)
+          } else {
+            selectTask(task.id)
+          }
+        }}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
+        {/* 批量选择复选框 */}
+        {selectionMode && (
+          <Checkbox
+            checked={isChecked}
+            onChange={() => toggleSelection(task.id)}
+            className="shrink-0"
+            onClick={(e) => e.stopPropagation()}
+          />
+        )}
+
         {/* 展开/折叠按钮 */}
         <button
           className="p-0.5 hover:bg-muted rounded-sm shrink-0"
@@ -94,12 +132,14 @@ export function TaskNode({ task, depth = 0 }: TaskNodeProps) {
           )}
         </button>
 
-        {/* 完成复选框 */}
-        <Checkbox
-          checked={task.status === 'completed'}
-          onChange={handleToggleStatus}
-          className="shrink-0"
-        />
+        {/* 完成复选框（选择模式下隐藏） */}
+        {!selectionMode && (
+          <Checkbox
+            checked={task.status === 'completed'}
+            onChange={handleToggleStatus}
+            className="shrink-0"
+          />
+        )}
 
         {/* 里程碑星标 */}
         {task.is_milestone && (
@@ -140,8 +180,21 @@ export function TaskNode({ task, depth = 0 }: TaskNodeProps) {
           <Flag className={cn('size-3 shrink-0', priorityColors[task.priority as Priority])} />
         )}
 
+        {/* 拖拽手柄 */}
+        {!selectionMode && (
+          <button
+            className="p-1 hover:bg-muted rounded-sm shrink-0 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
+            {...attributes}
+            {...listeners}
+            onClick={(e) => e.stopPropagation()}
+            title="拖拽排序"
+          >
+            <GripVertical className="size-3.5 text-muted-foreground" />
+          </button>
+        )}
+
         {/* 操作按钮 (hover 显示) */}
-        {isHovered && (
+        {isHovered && !selectionMode && (
           <div className="flex items-center gap-0.5 shrink-0">
             <button
               className="p-1 hover:bg-muted rounded-sm"

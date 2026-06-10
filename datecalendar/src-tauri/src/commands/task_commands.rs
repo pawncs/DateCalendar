@@ -105,3 +105,43 @@ pub fn save_note(
 pub fn delete_note(service: State<'_, TaskService>, note_id: String) -> Result<(), String> {
     service.delete_note(&note_id)
 }
+
+// ==================== 排序命令 ====================
+
+#[tauri::command]
+pub fn reorder_task(
+    service: State<'_, TaskService>,
+    task_id: String,
+    new_parent_id: Option<String>,
+    new_sort_order: i32,
+) -> Result<(), String> {
+    service.reorder_task(&task_id, new_parent_id.as_deref(), new_sort_order)
+}
+
+// ==================== 批量操作命令 ====================
+
+#[tauri::command]
+pub fn batch_update_tasks(
+    service: State<'_, TaskService>,
+    ids: Vec<String>,
+    status: String,
+) -> Result<(), String> {
+    service.batch_update_status(&ids, &status)
+}
+
+#[tauri::command]
+pub fn batch_delete_tasks(
+    service: State<'_, TaskService>,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    service.batch_delete(&ids)
+}
+
+#[tauri::command]
+pub fn batch_move_tasks(
+    service: State<'_, TaskService>,
+    ids: Vec<String>,
+    new_parent_id: Option<String>,
+) -> Result<(), String> {
+    service.batch_move(&ids, new_parent_id.as_deref())
+}
