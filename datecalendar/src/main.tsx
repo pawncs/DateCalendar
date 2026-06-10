@@ -4,17 +4,15 @@ import './index.css'
 import App from './App.tsx'
 import { initAdapter } from './adapters'
 
-async function bootstrap() {
-  // 初始化适配层：检测环境 → 选择后端（tauri/http/sqljs）
-  const mode = await initAdapter()
-  console.log(`[DateCalendar] Running in ${mode} mode`)
+// 先渲染 App（不等待适配层），避免白屏
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+)
 
-  createRoot(document.getElementById('root')!).render(
-    <StrictMode>
-      <App />
-    </StrictMode>,
-  )
-}
-
-bootstrap()
+// 异步初始化适配层
+initAdapter()
+  .then((mode) => console.log(`[DateCalendar] Running in ${mode} mode`))
+  .catch((err) => console.error('[DateCalendar] Adapter init failed:', err))
 

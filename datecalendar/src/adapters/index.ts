@@ -71,10 +71,30 @@ export function getBackend(): BackendInterface {
  * 统一适配器 — 通过 Proxy 自动路由所有调用
  * 使用方式：adapter.get_all_tasks() / adapter.create_task(input) 等
  */
+/** 等待适配层初始化完成的 Promise */
+let initPromise: Promise<BackendMode> | null = null;
+
+export function waitForAdapter(): Promise<BackendMode> {
+  if (!initPromise) {
+    initPromise = initAdapter();
+  }
+  return initPromise;
+}
+
 export const adapter: BackendInterface = new Proxy({} as BackendInterface, {
   get(_target, prop: string) {
     return (...args: unknown[]) => {
-      if (!backend) throw new Error('Adapter not initialized. Call initAdapter() first.');
+      // 如果后端还没初始化，等待初始化完成后再调用
+      if (!backend) {
+        if (!initPromise) {
+          initPromise = initAdapter();
+        }
+        return initPromise.then(() => {
+          const fn = (backend as Record<string, Function>)[prop];
+          if (!fn) throw new Error(`Method ${prop} not found on backend`);
+          return fn(...args);
+        });
+      }
       const fn = (backend as Record<string, Function>)[prop];
       if (!fn) throw new Error(`Method ${prop} not found on backend`);
       return fn(...args);
