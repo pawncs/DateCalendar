@@ -2,13 +2,13 @@
 chcp 65001 >nul
 echo ========================================
 echo   DateCalendar 启动脚本
-echo   同时启动桌面应用 + 浏览器开发服务器
+echo   启动 Tauri 桌面应用 + 打开浏览器
 echo ========================================
 echo.
 
 cd /d "%~dp0datecalendar"
 
-echo [1/3] 安装依赖（如需要）...
+echo [1/2] 安装依赖（如需要）...
 if not exist "node_modules" (
     echo   正在安装 npm 依赖...
     call npm install
@@ -17,25 +17,35 @@ if not exist "node_modules" (
 )
 
 echo.
-echo [2/3] 启动 Tauri 桌面应用（含 HTTP API :9876）...
+echo [2/2] 启动 Tauri 开发模式（桌面应用 + 浏览器）...
 echo   首次启动需要编译 Rust，请耐心等待...
-start "DateCalendar-Tauri" cmd /c "npx tauri dev"
-echo   Tauri 正在后台启动...
-
 echo.
-echo [3/3] 启动浏览器开发服务器（:5173）...
-echo   等待 Tauri HTTP API 就绪（最多 30 秒）...
-timeout /t 3 /nobreak >nul
+echo   Tauri 启动后：
+echo     - 桌面窗口会自动打开
+echo     - 等待 HTTP API :9876 就绪后，浏览器会自动打开
+echo.
+
+start "DateCalendar-Tauri" cmd /c "npx tauri dev"
+
+echo   等待 HTTP API 就绪...
+timeout /t 5 /nobreak >nul
 
 :check_api
 curl.exe -s http://localhost:9876/api/health >nul 2>&1
 if %errorlevel% equ 0 (
-    echo   HTTP API 已就绪！
+    echo   HTTP API 已就绪！打开浏览器...
     start http://localhost:5173
-    npx vite --open
-) else (
-    timeout /t 2 /nobreak >nul
-    goto check_api
+    goto done
 )
+timeout /t 2 /nobreak >nul
+goto check_api
 
+:done
+echo.
+echo   ========================================
+echo   启动完成！
+echo     桌面应用：Tauri 窗口
+echo     浏览器  ：http://localhost:5173
+echo     HTTP API：http://localhost:9876
+echo   ========================================
 pause
