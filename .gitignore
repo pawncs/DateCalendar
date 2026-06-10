@@ -1,0 +1,10 @@
+# Test artifacts
+target/
+test-report/
+
+# Playwright logs
+.playwright-cli/
+
+# Screenshots
+screenshot-*.png
+snap-*.yaml
