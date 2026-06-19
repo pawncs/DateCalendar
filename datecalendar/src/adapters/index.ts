@@ -1,12 +1,14 @@
 /**
  * 适配层 — 统一入口
  * 根据运行环境自动选择接入方式：
- *   1. Tauri 环境 → IPC (tauriBackend)
+ *   1. Tauri 环境 → IPC (动态加载 tauriBackend)
  *   2. HTTP API 可达 → HTTP (httpBackend)
  *   3. 以上皆不可达 → SQL.js 降级 (sqljsBackend)
+ * 
+ * 关键：tauriBackend 使用动态 import，避免浏览器环境下
+ * 静态导入 @tauri-apps/api/core 导致模块加载失败。
  */
 import type { BackendInterface } from './types';
-import { tauriBackend } from './tauriBackend';
 import { httpBackend } from './httpBackend';
 import { sqljsBackend } from './sqljsBackend';
 
@@ -17,10 +19,11 @@ let backend: BackendInterface | null = null;
 
 /** 初始化适配层，检测环境并选择后端 */
 export async function initAdapter(): Promise<BackendMode> {
-  // 1. 检测 Tauri 环境
+  // 1. 检测 Tauri 环境——动态加载 Tauri IPC
   if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
     mode = 'tauri';
-    backend = tauriBackend;
+    const { createTauriBackend } = await import('./tauriBackend');
+    backend = await createTauriBackend();
     console.log('[Adapter] Mode: tauri (IPC)');
     return mode;
   }

@@ -21,11 +21,13 @@ pub struct Task {
 /// 用于创建新任务的结构体
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewTask {
+    #[serde(alias = "parentId")]
     pub parent_id: Option<String>,
     pub title: String,
     pub description: Option<String>,
     pub priority: Option<i32>,
     pub color: Option<String>,
+    #[serde(alias = "isMilestone")]
     pub is_milestone: Option<bool>,
 }
 

@@ -97,12 +97,12 @@ impl TaskService {
         let conn = self.pool.get().map_err(|e| e.to_string())?;
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        let title = input.title;
-        let description = input.description.unwrap_or_default();
+        let title = input.title.clone();
+        let description = input.description.clone().unwrap_or_default();
         let priority = input.priority.unwrap_or(0);
-        let color = input.color.unwrap_or_default();
+        let color = input.color.clone().unwrap_or_default();
         let is_milestone = input.is_milestone.unwrap_or(false);
-        let parent_id = input.parent_id;
+        let parent_id = input.parent_id.clone();
 
         // 计算同级最大的 sort_order
         let max_order: i32 = conn
@@ -112,15 +112,30 @@ impl TaskService {
                 |row| row.get(0),
             )
             .unwrap_or(-1);
+        let sort_order = max_order + 1;
 
         conn.execute(
             "INSERT INTO tasks (id, parent_id, title, description, status, priority, sort_order, color, is_milestone, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![id, parent_id, title, description, priority, max_order + 1, color, is_milestone as i32, now, now],
+            params![id, parent_id, title, description, priority, sort_order, color, is_milestone as i32, now, now],
         )
         .map_err(|e| e.to_string())?;
 
-        self.get_task(&id).map(|t| t.unwrap())
+        // 直接构建返回，避免二次 pool.get() 造成死锁（max_size=1 时必现）
+        Ok(Task {
+            id,
+            parent_id,
+            title,
+            description,
+            status: "pending".to_string(),
+            priority,
+            sort_order,
+            color,
+            is_milestone,
+            created_at: now.clone(),
+            updated_at: now,
+            completed_at: None,
+        })
     }
 
     /// 更新任务
@@ -129,70 +144,73 @@ impl TaskService {
         is_milestone: Option<bool>, parent_id: Option<Option<&str>>,
         sort_order: Option<i32>) -> Result<Task, String>
     {
-        let conn = self.pool.get().map_err(|e| e.to_string())?;
-        let now = Utc::now().to_rfc3339();
+        let has_changes;
+        {
+            let conn = self.pool.get().map_err(|e| e.to_string())?;
+            let now = Utc::now().to_rfc3339();
 
-        // 构建动态 SQL
-        let mut sets: Vec<String> = Vec::new();
-        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            // 构建动态 SQL
+            let mut sets: Vec<String> = Vec::new();
+            let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
-        if let Some(t) = title {
-            sets.push(format!("title = ?{}", sets.len() + 1));
-            values.push(Box::new(t.to_string()));
-        }
-        if let Some(d) = description {
-            sets.push(format!("description = ?{}", sets.len() + 1));
-            values.push(Box::new(d.to_string()));
-        }
-        if let Some(s) = status {
-            sets.push(format!("status = ?{}", sets.len() + 1));
-            values.push(Box::new(s.to_string()));
-            // 如果状态变为 completed，记录完成时间
-            if s == "completed" {
-                sets.push(format!("completed_at = ?{}", sets.len() + 1));
-                values.push(Box::new(now.clone()));
+            if let Some(t) = title {
+                sets.push(format!("title = ?{}", sets.len() + 1));
+                values.push(Box::new(t.to_string()));
             }
-        }
-        if let Some(p) = priority {
-            sets.push(format!("priority = ?{}", sets.len() + 1));
-            values.push(Box::new(p));
-        }
-        if let Some(c) = color {
-            sets.push(format!("color = ?{}", sets.len() + 1));
-            values.push(Box::new(c.to_string()));
-        }
-        if let Some(m) = is_milestone {
-            sets.push(format!("is_milestone = ?{}", sets.len() + 1));
-            values.push(Box::new(m as i32));
-        }
-        if let Some(pid) = parent_id {
-            sets.push(format!("parent_id = ?{}", sets.len() + 1));
-            values.push(Box::new(pid.map(|s| s.to_string())));
-        }
-        if let Some(so) = sort_order {
-            sets.push(format!("sort_order = ?{}", sets.len() + 1));
-            values.push(Box::new(so));
-        }
+            if let Some(d) = description {
+                sets.push(format!("description = ?{}", sets.len() + 1));
+                values.push(Box::new(d.to_string()));
+            }
+            if let Some(s) = status {
+                sets.push(format!("status = ?{}", sets.len() + 1));
+                values.push(Box::new(s.to_string()));
+                // 如果状态变为 completed，记录完成时间
+                if s == "completed" {
+                    sets.push(format!("completed_at = ?{}", sets.len() + 1));
+                    values.push(Box::new(now.clone()));
+                }
+            }
+            if let Some(p) = priority {
+                sets.push(format!("priority = ?{}", sets.len() + 1));
+                values.push(Box::new(p));
+            }
+            if let Some(c) = color {
+                sets.push(format!("color = ?{}", sets.len() + 1));
+                values.push(Box::new(c.to_string()));
+            }
+            if let Some(m) = is_milestone {
+                sets.push(format!("is_milestone = ?{}", sets.len() + 1));
+                values.push(Box::new(m as i32));
+            }
+            if let Some(pid) = parent_id {
+                sets.push(format!("parent_id = ?{}", sets.len() + 1));
+                values.push(Box::new(pid.map(|s| s.to_string())));
+            }
+            if let Some(so) = sort_order {
+                sets.push(format!("sort_order = ?{}", sets.len() + 1));
+                values.push(Box::new(so));
+            }
 
-        // 总是更新 updated_at
-        sets.push(format!("updated_at = ?{}", sets.len() + 1));
-        values.push(Box::new(now));
+            has_changes = !sets.is_empty();
 
-        if sets.is_empty() {
-            return self.get_task(id).map(|t| t.unwrap());
-        }
+            if has_changes {
+                // 总是更新 updated_at
+                sets.push(format!("updated_at = ?{}", sets.len() + 1));
+                values.push(Box::new(now));
 
-        let sql = format!(
-            "UPDATE tasks SET {} WHERE id = ?{}",
-            sets.join(", "),
-            sets.len() + 1
-        );
-        values.push(Box::new(id.to_string()));
+                let sql = format!(
+                    "UPDATE tasks SET {} WHERE id = ?{}",
+                    sets.join(", "),
+                    sets.len() + 1
+                );
+                values.push(Box::new(id.to_string()));
 
-        // 转换参数为引用列表
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
-        conn.execute(&sql, params_refs.as_slice())
-            .map_err(|e| e.to_string())?;
+                // 转换参数为引用列表
+                let params_refs: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+                conn.execute(&sql, params_refs.as_slice())
+                    .map_err(|e| e.to_string())?;
+            }
+        } // conn 在此处释放，避免 get_task 二次 pool.get() 死锁
 
         self.get_task(id).map(|t| t.unwrap())
     }

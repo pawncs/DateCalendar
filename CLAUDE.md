@@ -143,7 +143,7 @@ The AI must actively guide the user's architectural understanding:
 
 ### 7.1 多端接入测试架构
 
-本项目采用 **同一 Rust 后端，两种接入方式** 的架构：
+本项目采用 **同一 Rust 后端，两种接入方式** 的架构，测试覆盖三层：
 
 ```
                  ┌─ 共享前端 (React/TSX) ──────────────┐
@@ -176,12 +176,20 @@ The AI must actively guide the user's architectural understanding:
 2. **`http` 模式**：浏览器通过 HTTP API (`:9876`) 代理到 Rust 服务层，操作同一数据库
 3. **`sqljs` 模式**：Tauri 未启动时的离线降级，使用 SQL.js 内存数据库
 
-**验证链路：**
+**三层白盒测试覆盖（共 101 个）：**
+
+| 层 | 数量 | 测试内容 | 位置 |
+|----|------|---------|------|
+| **Service 层** | 34 | SQL 查询、CRUD、排序、搜索、冲突检测、状态同步 | `src/services/*.rs` |
+| **Commands 层** (Tauri IPC) | 36 | 参数映射（Option 解包、默认值、引用转换）、IPC 序列化 | `src/commands/*.rs` |
+| **HTTP API 层** | 31 | JSON 反序列化（camelCase→snake_case）、路由匹配、HTTP 状态码、查询参数 | `src/api/*.rs` |
+
 ```
-Rust 服务层  ──cargo test──→  34 个单元测试 ✅ → 业务逻辑正确性
-前端 UI     ──Playwright──→  黑盒测试 ✅ → UI+交互正确性
-  ├── 在线模式 (HTTP API) → 操作真实数据库
-  └── 离线模式 (SQL.js)   → 操作内存数据库
+验证链路：
+     Service 层 ──cargo test──→  34 个 ✅ → 业务逻辑 + SQL 正确性
+  Commands 层 ──cargo test──→  36 个 ✅ → Tauri IPC 参数映射
+   HTTP API 层 ──cargo test──→  31 个 ✅ → HTTP 路由 + JSON 序列化
+     前端 UI    ──Playwright──→  黑盒测试 ✅ → UI+交互正确性
 ```
 
 ### 7.2 测试文档结构
@@ -247,8 +255,10 @@ target/                       # 测试报告 + 测试数据（不入 docs）
 ```bash
 # === Rust 后端白盒测试 ===
 cd datecalendar/src-tauri && cargo test --lib                    # 全部
+cargo test --lib services::                                      # Service 层 (34)
+cargo test --lib commands::                                      # Commands 层 (36)
+cargo test --lib api::                                           # HTTP API 层 (31)
 cargo test --lib task_service                                    # 按模块
-cargo test --lib schedule_service
 cargo test --lib test_update_task_milestone_save -- --nocapture  # 单个
 
 # === 前端黑盒测试（在线模式） ===
@@ -261,3 +271,49 @@ cd datecalendar && npx vite                                      # 仅 Vite
 playwright-cli open http://localhost:5173
 playwright-cli screenshot --filename=target/screenshots/offline-01.png
 ```
+
+### 7.7 新功能测试要求（强制）
+
+**任何新增功能必须在三个层级都添加测试：**
+
+1. **Service 层** — 测试核心业务逻辑和 SQL：
+   - 正常路径（happy path）
+   - 边界条件（空值、极值、重复操作）
+   - 错误场景（无效输入、不存在的 ID）
+   - 使用 `:memory:` SQLite + `max_size(2)` 连接池
+
+2. **Commands 层** — 测试 Tauri IPC 参数映射：
+   - Option 默认值处理（`unwrap_or`、`unwrap_or_default`）
+   - 多层 Option 展开（如 `Option<Option<String>>` → `Option<Option<&str>>`）
+   - 引用转换（`as_deref()`、`as_ref()`）
+   - 直接调用 Service（绕过 Tauri State，避免 IPC 框架依赖）
+
+3. **HTTP API 层** — 测试 HTTP 序列化和路由：
+   - camelCase ↔ snake_case JSON 字段映射（`#[serde(rename)]`/`#[serde(alias)]`）
+   - HTTP 状态码验证（200/201/204/404）
+   - 查询参数解析（`?start=&end=`）
+   - 路径参数解析（`/{id}`、`/{date}`）
+   - 使用 `actix_web::test` + 内存数据库
+
+### 7.8 连接池死锁防范规则
+
+**问题根因**：Rust 的 `r2d2` 连接池中，`pool.get()` 返回的 `PooledConnection` 在变量未被 drop 前一直持有连接。如果 Service 方法内部二次调用 `pool.get()`（如 `create_task` 内部调用 `get_task`），在 `max_size=1` 时会**死锁超时 30 秒**。
+
+**强制规则**：
+- ❌ **禁止**：在持有 `conn` 的情况下调用其他 `self.xxx()` 方法
+- ✅ **正确做法**：用 `{}` 作用域提前释放连接，或直接构建返回值避免二次查询
+```rust
+// ❌ 错误（死锁）
+let conn = self.pool.get()?;
+conn.execute("INSERT ...")?;
+self.get_task(&id)  // ← 二次 pool.get() → 死锁！
+
+// ✅ 正确（作用域释放）
+{
+    let conn = self.pool.get()?;
+    conn.execute("INSERT ...")?;
+} // conn 在此释放
+self.get_task(&id)  // ← 安全，连接已归还
+```
+
+**测试辅助函数**使用 `max_size(2)` 可以避免触发此问题，但**不应依赖此绕过**。Service 方法必须自身避免嵌套 `pool.get()`。

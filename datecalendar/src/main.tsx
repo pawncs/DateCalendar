@@ -2,12 +2,17 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import FloatingWindow from './components/floating/FloatingWindow'
 import { initAdapter } from './adapters'
 
-// 先渲染 App（不等待适配层），避免白屏
+// 根据路径决定渲染主窗口还是悬浮窗
+// Tauri 多窗口：主窗口加载 "/" ，悬浮窗加载 "/floating"
+const isFloating = window.location.pathname === '/floating'
+
+// 先渲染对应组件（不等待适配层），避免白屏
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    {isFloating ? <FloatingWindow /> : <App />}
   </StrictMode>,
 )
 

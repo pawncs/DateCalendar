@@ -224,16 +224,20 @@ impl ScheduleService {
         schedule_type: &str,
         color: &str,
     ) -> Result<Schedule, String> {
-        let conn = self.pool.get().map_err(|e| e.to_string())?;
-        let id = Uuid::new_v4().to_string();
-        let now = Utc::now().to_rfc3339();
+        let id;
+        let now;
+        {
+            let conn = self.pool.get().map_err(|e| e.to_string())?;
+            id = Uuid::new_v4().to_string();
+            now = Utc::now().to_rfc3339();
 
-        conn.execute(
-            "INSERT INTO schedules (id, task_id, title, start_time, end_time, is_all_day, schedule_type, status, color, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?9, ?10)",
-            params![id, task_id, title, start_time, end_time, is_all_day as i32, schedule_type, color, now, now],
-        )
-        .map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO schedules (id, task_id, title, start_time, end_time, is_all_day, schedule_type, status, color, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?9, ?10)",
+                params![id, task_id, title, start_time, end_time, is_all_day as i32, schedule_type, color, now, now],
+            )
+            .map_err(|e| e.to_string())?;
+        } // conn 在此处释放，避免 get_schedule 二次 pool.get() 死锁
 
         self.get_schedule(&id).map(|s| s.unwrap())
     }
@@ -251,62 +255,62 @@ impl ScheduleService {
         color: Option<&str>,
         task_id: Option<&str>,
     ) -> Result<Schedule, String> {
-        let conn = self.pool.get().map_err(|e| e.to_string())?;
-        let now = Utc::now().to_rfc3339();
+        {
+            let conn = self.pool.get().map_err(|e| e.to_string())?;
+            let now = Utc::now().to_rfc3339();
 
-        let mut sets: Vec<String> = Vec::new();
-        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            let mut sets: Vec<String> = Vec::new();
+            let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
-        if let Some(t) = title {
-            sets.push(format!("title = ?{}", sets.len() + 1));
-            values.push(Box::new(t.to_string()));
-        }
-        if let Some(s) = start_time {
-            sets.push(format!("start_time = ?{}", sets.len() + 1));
-            values.push(Box::new(s.to_string()));
-        }
-        if let Some(e) = end_time {
-            sets.push(format!("end_time = ?{}", sets.len() + 1));
-            values.push(Box::new(e.to_string()));
-        }
-        if let Some(a) = is_all_day {
-            sets.push(format!("is_all_day = ?{}", sets.len() + 1));
-            values.push(Box::new(a as i32));
-        }
-        if let Some(st) = schedule_type {
-            sets.push(format!("schedule_type = ?{}", sets.len() + 1));
-            values.push(Box::new(st.to_string()));
-        }
-        if let Some(s) = status {
-            sets.push(format!("status = ?{}", sets.len() + 1));
-            values.push(Box::new(s.to_string()));
-        }
-        if let Some(c) = color {
-            sets.push(format!("color = ?{}", sets.len() + 1));
-            values.push(Box::new(c.to_string()));
-        }
-        if let Some(tid) = task_id {
-            sets.push(format!("task_id = ?{}", sets.len() + 1));
-            values.push(Box::new(tid.to_string()));
-        }
+            if let Some(t) = title {
+                sets.push(format!("title = ?{}", sets.len() + 1));
+                values.push(Box::new(t.to_string()));
+            }
+            if let Some(s) = start_time {
+                sets.push(format!("start_time = ?{}", sets.len() + 1));
+                values.push(Box::new(s.to_string()));
+            }
+            if let Some(e) = end_time {
+                sets.push(format!("end_time = ?{}", sets.len() + 1));
+                values.push(Box::new(e.to_string()));
+            }
+            if let Some(a) = is_all_day {
+                sets.push(format!("is_all_day = ?{}", sets.len() + 1));
+                values.push(Box::new(a as i32));
+            }
+            if let Some(st) = schedule_type {
+                sets.push(format!("schedule_type = ?{}", sets.len() + 1));
+                values.push(Box::new(st.to_string()));
+            }
+            if let Some(s) = status {
+                sets.push(format!("status = ?{}", sets.len() + 1));
+                values.push(Box::new(s.to_string()));
+            }
+            if let Some(c) = color {
+                sets.push(format!("color = ?{}", sets.len() + 1));
+                values.push(Box::new(c.to_string()));
+            }
+            if let Some(tid) = task_id {
+                sets.push(format!("task_id = ?{}", sets.len() + 1));
+                values.push(Box::new(tid.to_string()));
+            }
 
-        if sets.is_empty() {
-            return self.get_schedule(id).map(|s| s.unwrap());
-        }
+            if !sets.is_empty() {
+                sets.push(format!("updated_at = ?{}", sets.len() + 1));
+                values.push(Box::new(now));
 
-        sets.push(format!("updated_at = ?{}", sets.len() + 1));
-        values.push(Box::new(now));
+                let sql = format!(
+                    "UPDATE schedules SET {} WHERE id = ?{}",
+                    sets.join(", "),
+                    sets.len() + 1
+                );
+                values.push(Box::new(id.to_string()));
 
-        let sql = format!(
-            "UPDATE schedules SET {} WHERE id = ?{}",
-            sets.join(", "),
-            sets.len() + 1
-        );
-        values.push(Box::new(id.to_string()));
-
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
-        conn.execute(&sql, params_refs.as_slice())
-            .map_err(|e| e.to_string())?;
+                let params_refs: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+                conn.execute(&sql, params_refs.as_slice())
+                    .map_err(|e| e.to_string())?;
+            }
+        } // conn 在此处释放，避免 get_schedule 二次 pool.get() 死锁
 
         self.get_schedule(id).map(|s| s.unwrap())
     }
@@ -404,36 +408,38 @@ impl ScheduleService {
         end_time: &str,
         exclude_id: Option<&str>,
     ) -> Result<Vec<Schedule>, String> {
-        let conn = self.pool.get().map_err(|e| e.to_string())?;
+        let ids: Vec<String> = {
+            let conn = self.pool.get().map_err(|e| e.to_string())?;
 
-        let ids: Vec<String> = if let Some(ex_id) = exclude_id {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id FROM schedules
-                     WHERE schedule_type = 'fixed'
-                       AND status != 'cancelled'
-                       AND start_time < ?1 AND end_time > ?2
-                       AND id != ?3"
-                )
-                .map_err(|e| e.to_string())?;
+            if let Some(ex_id) = exclude_id {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id FROM schedules
+                         WHERE schedule_type = 'fixed'
+                           AND status != 'cancelled'
+                           AND start_time < ?1 AND end_time > ?2
+                           AND id != ?3"
+                    )
+                    .map_err(|e| e.to_string())?;
 
-            let rows = stmt.query_map(params![end_time, start_time, ex_id], |row| row.get::<_, String>(0))
-                .map_err(|e| e.to_string())?;
-            rows.filter_map(|r| r.ok()).collect()
-        } else {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id FROM schedules
-                     WHERE schedule_type = 'fixed'
-                       AND status != 'cancelled'
-                       AND start_time < ?1 AND end_time > ?2"
-                )
-                .map_err(|e| e.to_string())?;
+                let rows = stmt.query_map(params![end_time, start_time, ex_id], |row| row.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?;
+                rows.filter_map(|r| r.ok()).collect()
+            } else {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id FROM schedules
+                         WHERE schedule_type = 'fixed'
+                           AND status != 'cancelled'
+                           AND start_time < ?1 AND end_time > ?2"
+                    )
+                    .map_err(|e| e.to_string())?;
 
-            let rows = stmt.query_map(params![end_time, start_time], |row| row.get::<_, String>(0))
-                .map_err(|e| e.to_string())?;
-            rows.filter_map(|r| r.ok()).collect()
-        };
+                let rows = stmt.query_map(params![end_time, start_time], |row| row.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?;
+                rows.filter_map(|r| r.ok()).collect()
+            }
+        }; // conn 在此处释放，避免 get_schedule 二次 pool.get() 死锁
 
         let mut result = Vec::new();
         for id in ids {

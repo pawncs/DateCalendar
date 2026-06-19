@@ -365,34 +365,39 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
    └── 关联概念: WebView、窗口层级(Z-order)、全局热键
 ```
 
-### 6.1 悬浮窗窗口配置
+### 6.1 悬浮窗窗口创建（动态，Rust 侧）
 
-```json
-// tauri.conf.json 中配置多个窗口
-{
-  "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "DateCalendar",
-        "width": 1200,
-        "height": 800
-      },
-      {
-        "label": "floating",
-        "title": "DateCalendar Widget",
-        "width": 320,
-        "height": 600,
-        "alwaysOnTop": true,
-        "decorations": false,    // 无边框
-        "transparent": true,     // 透明背景
-        "visible": false,        // 初始隐藏
-        "resizable": false
-      }
-    ]
-  }
+悬浮窗不在 `tauri.conf.json` 中静态声明，而是在 `lib.rs` 的 `setup` 阶段通过 `WebviewWindowBuilder` 动态创建。原因：
+- 需要运行时获取屏幕尺寸来计算停靠位置
+- 窗口生命周期需由代码控制（隐藏/显示切换）
+
+```rust
+// floating_window.rs
+pub fn create_floating_window(app: &AppHandle) -> Result<WebviewWindow, Box<dyn std::error::Error>> {
+    let monitor = app.primary_monitor()?.ok_or("无法获取主显示器")?;
+    let screen_w = monitor.size().width as f64 / monitor.scale_factor();
+
+    // 隐藏位置：窗口在屏幕外，仅露 8px 边缘
+    let hidden_x = screen_w - 8.0;
+    let hidden_y = (screen_h - 560.0) / 2.0;
+
+    let floating = WebviewWindowBuilder::new(app, "floating", WebviewUrl::App("/floating".into()))
+        .title("")
+        .inner_size(340.0, 560.0)
+        .position(hidden_x, hidden_y)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .shadow(false)
+        .visible(true)
+        .build()?;
+    Ok(floating)
 }
 ```
+
+前端通过 `/floating` 路由渲染悬浮窗组件（路径由 `WebviewUrl::App("/floating")` 指定）。
 
 ### 6.2 主窗口 ↔ 悬浮窗通信
 
@@ -401,7 +406,65 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 ```
 主窗口更新任务 → emit('task-updated', data) → 悬浮窗接收 → 更新显示
 悬浮窗点击任务 → emit('focus-task', id) → 主窗口接收 → 跳转到对应任务
+全局热键触发 → emit('floating:toggle', ()) → 悬浮窗切换显隐
 ```
+
+### 6.3 系统托盘（D-17）
+
+系统托盘让应用常驻后台，关闭主窗口 ≠ 退出应用。
+
+```rust
+// lib.rs setup 中
+fn create_system_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let menu = MenuBuilder::new(app)
+        .items(&[&show_main, &toggle_floating, &separator, &settings, &separator, &quit])
+        .build()?;
+
+    TrayIconBuilder::new()
+        .icon(app.default_window_icon().unwrap().clone())
+        .menu(&menu)
+        .tooltip("DateCalendar")
+        .on_menu_event(|app, event| { /* 处理菜单点击 */ })
+        .on_tray_icon_event(|tray, event| { /* 左键单击显示主窗口 */ })
+        .build(app)?;
+    Ok(())
+}
+```
+
+**关键行为**：
+- 左键单击托盘图标 → 显示/聚焦主窗口
+- 右键菜单 → "显示主窗口"、"切换悬浮窗"、"设置..."、"退出"
+- 关闭主窗口 → 隐藏（不是退出），托盘仍在
+
+### 6.4 全局热键（D-15）
+
+全局热键在系统级注册，任何应用中按下均生效。
+
+```rust
+// global_hotkey.rs
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+pub fn register_global_hotkeys(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let shortcut_manager = app.global_shortcut();
+
+    shortcut_manager.register("Ctrl+Shift+D", move |_app, shortcut, event| {
+        if event.state() == ShortcutState::Pressed {
+            app.emit_to("floating", "floating:toggle", ()).ok();
+        }
+    })?;
+
+    // Ctrl+Shift+T → 循环透明度
+    shortcut_manager.register("Ctrl+Shift+T", move |_app, shortcut, event| { /* ... */ })?;
+
+    Ok(())
+}
+```
+
+**默认热键**：
+| 热键 | 功能 |
+|------|------|
+| `Ctrl+Shift+D` | 切换悬浮窗显隐 |
+| `Ctrl+Shift+T` | 循环透明度（85% → 60% → 40% → 85%） |
 
 ---
 
@@ -612,4 +675,29 @@ datecalendar-cli schedule today
 
 ---
 
-*文档版本: v2.1 | 更新日期: 2026-06-10 | 变更: 双后端改为多端接入（HTTP API 代理 + SQL.js 降级）*
+## 9. 已知遗留问题（Phase 3 / D-13~D-17）
+
+> 记录时间：2026-06-19
+
+### 9.1 边缘鼠标弹出自定义失效
+- **现象**：悬浮窗隐藏（仅露 24px 边缘）后，鼠标移到右边缘不会自动弹出
+- **原因分析**：Tauri v2 透明窗口（`transparent: true`）可能在某些条件下不接收鼠标事件（hit-testing 问题）。已尝试 `background: rgba(0,0,0,0.01)` 最小背景方案，但仍不稳定
+- **建议方向**：Rust 侧光标轮询（`cursor_position`）+ 右边缘触发区检测
+
+### 9.2 任务栏点击不弹出悬浮窗
+- **现象**：点击任务栏 DateCalendar 图标不触发悬浮窗弹出
+- **原因分析**：Tauri v2 的 `WindowEvent` 缺少 `Shown`/`Visible` 事件。当前用 `Focused(true)` 挂钩，但最小化后恢复时可能不触发
+- **建议方向**：用 `window.on_window_event` 监听更多事件类型，或使用平台特定钩子
+
+### 9.3 透明度循环热键反馈不确定
+- **现象**：`Ctrl+Shift+T` 循环切换透明度，但前端无视觉反馈确认
+- **影响**：用户不知道当前透明度档位
+
+### 9.4 悬浮窗初始位置垂直偏移
+- **现象**：部分显示器上悬浮窗垂直位置不居中
+- **原因**：`monitor.scale_factor()` 和 `monitor.size()` 的物理/逻辑像素转换可能在某些 DPI 配置下不准确
+- **建议方向**：测试多显示器、多 DPI 场景
+
+---
+
+*文档版本: v2.2 | 更新日期: 2026-06-19 | 变更: 新增第9节已知遗留问题（Phase 3）*
