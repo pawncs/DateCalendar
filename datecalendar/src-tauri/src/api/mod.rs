@@ -1,5 +1,6 @@
 pub mod task_routes;
 pub mod schedule_routes;
+pub mod openapi;
 
 use actix_cors::Cors;
 use actix_web::{web, HttpResponse};
@@ -7,6 +8,19 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use crate::services::task_service::TaskService;
 use crate::services::schedule_service::ScheduleService;
+
+/// 健康检查端点
+pub async fn health() -> HttpResponse {
+    HttpResponse::Ok().json(serde_json::json!({ "status": "ok" }))
+}
+
+/// OpenAPI 规范端点
+pub async fn openapi_spec() -> HttpResponse {
+    let json = openapi::get_openapi_json();
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .body(json)
+}
 
 /// 启动 HTTP API 服务器（后台线程）
 pub fn start_api_server(pool: Pool<SqliteConnectionManager>) {
@@ -25,6 +39,8 @@ pub fn start_api_server(pool: Pool<SqliteConnectionManager>) {
                 .wrap(cors)
                 .app_data(task_service.clone())
                 .app_data(schedule_service.clone())
+                // OpenAPI 规范端点
+                .route("/api-docs/openapi.json", web::get().to(openapi_spec))
                 // 健康检查
                 .route("/api/health", web::get().to(health))
                 // 任务路由
@@ -43,6 +59,3 @@ pub fn start_api_server(pool: Pool<SqliteConnectionManager>) {
     });
 }
 
-async fn health() -> HttpResponse {
-    HttpResponse::Ok().json(serde_json::json!({ "status": "ok" }))
-}

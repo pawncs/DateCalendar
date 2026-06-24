@@ -1,0 +1,13 @@
+POST /api/schedules HTTP/1.1
+Host: 127.0.0.1:9876
+Content-Type: application/json
+
+{
+  "taskId": "existing-task-id",
+  "title": "团队周会",
+  "startTime": "2026-06-20T10:00:00",
+  "endTime": "2026-06-20T11:00:00",
+  "isAllDay": false,
+  "scheduleType": "fixed",
+  "color": "#3b82f6"
+}

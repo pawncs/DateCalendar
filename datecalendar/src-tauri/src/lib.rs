@@ -1,5 +1,5 @@
-mod db;
-mod services;
+pub mod db;
+pub mod services;
 mod commands;
 mod api;
 mod floating_window;

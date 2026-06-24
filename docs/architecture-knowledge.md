@@ -15,8 +15,11 @@
 6. [多窗口架构与悬浮窗](#6-多窗口架构与悬浮窗)
 7. [HTTP API 嵌入模式](#7-http-api-嵌入模式)
 8. [CLI 工具设计](#8-cli-工具设计)
-9. [双后端测试架构](#9-双后端测试架构)
-10. [概念关联图](#10-概念关联图)
+9. [API 认证设计](#9-api-认证设计)
+10. [API 文档自动生成](#10-api-文档自动生成)
+11. [workbuddy Skill 设计](#11-workbuddy-skill-设计)
+12. [多端接入架构](#12-多端接入架构)
+13. [概念关联图](#13-概念关联图)
 
 ---
 
@@ -525,35 +528,232 @@ app.setup(|app| {
 
 ```
 🔍 知识点雷达: CLI 工具 (clap)
-   ├── 是什么: 一个独立的命令行程序，通过参数接收指令，通过 stdout 输出 JSON 结果
-   ├── 为什么用: 适合脚本化批量操作，workbuddy 可通过执行命令快速读写数据
+   ├── 是什么: 一个独立的命令行程序（独立二进制），通过参数接收指令，通过 stdout 输出 JSON 结果
+   ├── 为什么用: 适合脚本化批量操作，workbuddy 可通过执行命令快速读写数据；无需启动 HTTP 服务器
    ├── 核心心智模型:
    │   $ datecalendar-cli task list --format json
-   │   输入: 命令行参数
-   │   输出: stdout 的 JSON
-   │   退出码: 0=成功, 非0=错误
-   └── 关联概念: clap 参数解析、stdin/stdout/stderr
+   │   输入: 命令行参数 (+ 可选 stdin JSON)
+   │   输出: stdout 的 JSON（或 table/csv）
+   │   退出码: 0=成功, 1=业务错误, 2=参数错误, 3=数据库错误, 4=数据库未找到
+   └── 关联概念: clap 参数解析、stdin/stdout/stderr、退出码规范
 ```
 
-### 8.1 使用示例
+### 8.1 命令结构
+
+```
+datecalendar-cli
+├── task                      # 任务管理
+│   ├── list                 # 列出所有任务（树形）
+│   ├── get <ID>            # 获取单个任务
+│   ├── create              # 创建任务（参数或 stdin JSON）
+│   ├── update <ID>         # 更新任务
+│   ├── delete <ID>         # 删除任务
+│   ├── search <QUERY>      # 搜索任务
+│   ├── complete <ID>       # 标记完成
+│   └── import             # 从 stdin JSON 批量导入
+├── schedule                 # 日程管理
+│   ├── list                # 列出所有日程
+│   ├── day <DATE>          # 查看某天日程
+│   ├── week <START>        # 查看某周日程
+│   ├── create              # 创建日程
+│   ├── update <ID>         # 更新日程
+│   ├── delete <ID>         # 删除日程
+│   └── conflicts          # 检测时间冲突
+├── health                   # 检查数据库连接
+└── version                  # 显示版本信息
+```
+
+### 8.2 数据库路径自动发现
+
+CLI 需要找到 `datecalendar.db`，按以下顺序查找：
+
+1. `--db-path` 命令行参数
+2. 环境变量 `DATECALENDAR_DB`
+3. 默认位置（按操作系统）
+   - Windows: `%APPDATA%\DateCalendar\datecalendar.db`
+   - macOS: `~/Library/Application Support/DateCalendar/datecalendar.db`
+   - Linux: `~/.local/share/DateCalendar/datecalendar.db`
+4. 当前目录 `./datecalendar.db`（开发模式）
+
+### 8.3 共享服务层
+
+CLI 不直接访问数据库，而是通过共享的 `TaskService` / `ScheduleService`（放在独立的 `datecalendar-core` crate 中）。这确保：
+- CLI 和 Tauri 后端的行为一致
+- 业务逻辑只需维护一份
+- 测试可以共享
+
+### 8.4 使用示例
 
 ```bash
-# 列出所有任务
+# 列出所有任务（JSON 输出，脚本友好）
 datecalendar-cli task list
 
-# 创建任务
-datecalendar-cli task create --title "完成报告" --parent-id "xxx"
+# 创建任务（命令行参数）
+datecalendar-cli task create "完成报告" --priority 2
 
-# 完成里程碑
-datecalendar-cli milestone complete --id "xxx"
+# 创建任务（stdin JSON，便于管道）
+echo '{"title":"完成报告","priority":2}' | datecalendar-cli task create --stdin
 
 # 查看今日日程
-datecalendar-cli schedule today
+datecalendar-cli schedule day $(date +%Y-%m-%d)
+
+# Table 格式输出（人类友好）
+datecalendar-cli task list --format table
 ```
 
 ---
 
-## 9. 多端接入架构
+## 9. API 认证设计（保留入口，暂不实现）
+
+```
+🔍 知识点雷达: API 认证 (Bearer Token)
+   ├── 是什么: 在 HTTP API 层添加 Bearer Token 认证，防止未授权访问
+   ├── 为什么用: DateCalendar 是个人使用的桌面应用，仅在本人电脑上运行，当前无需认证
+   │              但保留认证设计入口，以便未来扩展（如局域网访问）
+   ├── 核心心智模型:
+   │   请求 → Authorization: Bearer <token> → 中间件验证 → 通过/拒绝
+   │   Token 存储在 settings 表，启动时自动生成
+   │   白名单路径（/api/health, /api/auth/token）无需认证
+   └── 关联概念: Actix-web 中间件、Bearer Token、OpenAPI Security Scheme
+```
+
+### 项目定位
+
+DateCalendar 是个人使用的桌面应用：
+- HTTP API 绑定 `127.0.0.1`（仅本机可访问）
+- 无局域网/互联网暴露计划
+- 无多用户场景
+- **当前无需实现认证**
+
+### 保留认证入口的原因
+
+1. **未来扩展**：如果后续需要局域网访问（如手机访问桌面端），认证设计已就绪
+2. **workbuddy 集成**：workbuddy 可以假设 API 有认证，提前做好 token 管理逻辑
+3. **OpenAPI 规范完整**：API 文档中包含安全方案，符合业界标准
+
+### 9.1 认证方案（预留）
+
+| 方案 | 优点 | 缺点 | 最终选择 |
+|------|------|------|------------|
+| HTTP Basic Auth | 简单 | 每次传密码 | ❌ |
+| Bearer Token (静态) | 简单、标准、workbuddy 友好 | Token 泄露 = 全权限 | ✅ 预留 |
+| API Key (Query) | 简单 | URL 中可见 | ❌ |
+| mTLS | 最安全 | 配置复杂 | ❌ 过度设计 |
+
+### 9.2 Token 管理（预留）
+
+- **生成**：Tauri 应用首次启动时自动生成 UUID v4，存入 `settings` 表
+- **获取**：
+  - 方式一：`GET /api/auth/token?secret=<setup_secret>`（首次，一次性 secret）
+  - 方式二：`datecalendar-cli auth token`（直接读数据库）
+  - 方式三：读配置文件 `%APPDATA%\DateCalendar\api_token.txt`
+- **重置**：`datecalendar-cli auth reset-token`
+
+### 9.3 白名单路径（预留）
+
+| 路径 | 方法 | 说明 |
+|------|------|------|
+| `/api/health` | GET | 健康检查，监控系统用 |
+| `/api/auth/token` | GET | 获取 token（需要 setup_secret） |
+
+### 9.4 当前状态
+
+| 状态 | 说明 |
+|------|------|
+| ✅ 设计预留 | 认证方案、Token 管理、中间件实现均已设计完成 |
+| ✅ OpenAPI 规范 | API 文档中包含 `BearerAuth` 安全方案定义 |
+| ❌ 暂不实现 | 认证中间件、Token 生成、Token 验证均暂不实现 |
+| ❌ 暂不测试 | 测试计划 `14-api-auth.md` 暂不执行 |
+
+> 未来需要认证时（如局域网访问），再实现第 2 节的设计方案。
+
+---
+
+## 10. API 文档自动生成
+
+```
+🔍 知识点雷达: OpenAPI/Swagger 文档自动生成
+   ├── 是什么: 通过 utoipa 宏从 Rust 代码自动生成 OpenAPI 3.0 规范，并提供 Swagger UI 可交互文档页面
+   ├── 为什么用: 手写文档易过时，OpenAPI 是业界标准，工具链丰富（Postman、Swagger UI、代码生成）
+   ├── 核心心智模型:
+   │   代码 + #[utoipa::path(...)] 宏 → 编译时生成 OpenAPI 规范 → /api-docs/openapi.json
+   │   Swagger UI 读取规范 → 提供可交互文档页面 → /docs
+   └── 关联概念: OpenAPI 3.0、Swagger UI、utoipa、actix-web 集成
+```
+
+### 10.1 访问方式
+
+启动 Tauri 应用后，API 文档可通过以下 URL 访问：
+
+| URL | 内容 |
+|-----|------|
+| `http://127.0.0.1:9876/docs` | Swagger UI 交互式文档 |
+| `http://127.0.0.1:9876/api-docs/openapi.json` | OpenAPI 规范（JSON） |
+
+### 10.2 规范内容
+
+生成的 OpenAPI 规范包含：
+- 所有 API 端点的路径、方法、参数、请求体、响应
+- Schema 定义（TaskDto、NewTaskDto、ScheduleDto 等）
+- 安全方案（Bearer Auth）
+- 示例值
+
+### 10.3 workbuddy 如何使用
+
+workbuddy 可以：
+1. 读取 `http://127.0.0.1:9876/api-docs/openapi.json` 获取完整的 API 规范
+2. 根据规范自动生成正确的 API 调用代码
+3. 在 Swagger UI 中手动测试 API
+
+---
+
+## 11. workbuddy Skill 设计
+
+```
+🔍 知识点雷达: workbuddy Skill
+   ├── 是什么: 一个 Markdown 格式的技能描述文件，告诉 workbuddy 如何调用 DateCalendar 的 API/CLI
+   ├── 为什么用: workbuddy 需要知道 DateCalendar 的 API 契约、调用方式、数据格式，才能正确操作
+   ├── 核心心智模型:
+   │   workbuddy 读取 skill.md → 理解可用操作 → 根据用户指令选择操作 → 调用 CLI/HTTP API → 返回结果
+   │   Skill 是 workbuddy 的"使用手册"
+   └── 关联概念: CodeBuddy Skill、OpenAPI 规范、CLI、HTTP API
+```
+
+### 11.1 Skill 文件结构
+
+```
+skills/
+└── datecalendar/
+    ├── skill.md              # Skill 主文件（workbuddy 读取）
+    ├── README.md             # 人类阅读的文档
+    ├── examples/
+    │   ├── create-task.http  # HTTP 请求示例
+    │   ├── create-task.sh    # CLI 调用示例
+    │   └── response.json     # 响应示例
+    └── schema/
+        └── openapi.json      # OpenAPI 规范（符号链接或副本）
+```
+
+### 11.2 Skill 核心内容
+
+`skill.md` 包含：
+- **快速开始**：CLI 和 HTTP API 的调用示例
+- **核心概念**：Task 和 Schedule 的字段说明
+- **API 端点清单**：所有操作的 CLI 命令和 HTTP 端点对照表
+- **典型场景**：workbuddy 可能遇到的用户指令及处理方式
+- **错误处理**：各种错误的退出码和 HTTP 状态码
+
+### 11.3 典型场景示例
+
+| 用户指令 | workbuddy 行为 |
+|----------|----------------|
+| "帮我把明天下午 3 点的会议加进去" | 解析时间 → 调用 `schedule create` → 返回确认 |
+| "查看本周的所有待办" | 计算日期范围 → 调用 `schedule week` → 返回日程列表 |
+| "把这个任务标记为完成" | 获取当前任务 ID → 调用 `task complete` → 返回成功 |
+
+---
+
+## 12. 多端接入架构
 
 ```
 🔍 知识点雷达: 多端接入架构
@@ -576,7 +776,7 @@ datecalendar-cli schedule today
    └── 关联概念: 适配器模式、HTTP API 代理、SQL.js 降级、环境检测
 ```
 
-### 9.1 三种运行模式
+### 12.1 三种运行模式
 
 | 模式 | 条件 | 数据库 | 使用场景 |
 |------|------|--------|----------|
@@ -584,20 +784,20 @@ datecalendar-cli schedule today
 | `http` | `localhost:9876` 可达 | `datecalendar.db`（通过 HTTP 代理） | 浏览器 + Tauri |
 | `sqljs` | 以上皆不可达 | 浏览器内存 | 离线降级 |
 
-### 9.2 为什么用 HTTP API 代理而非独立后端
+### 12.2 为什么用 HTTP API 代理而非独立后端
 
 **方案演进**：最初考虑浏览器后端独立实现（SQL.js 作为平等后端），但用户需要在浏览器和桌面应用间共享数据。独立后端意味着两个数据库，无法共享。
 
 **最终方案**：浏览器通过 HTTP API 代理到同一个 Rust 后端，操作同一份 `datecalendar.db`。SQL.js 仅作为 Tauri 未启动时的降级方案。
 
-### 9.3 降级提示 UI
+### 12.3 降级提示 UI
 
 离线模式下，页面底部显示黄色 OfflineBanner：
 > ⚠️ 离线模式 — Tauri 后端未连接，数据仅保存在浏览器内存中，刷新页面将丢失。
 
 用户明确知道当前处于降级状态。
 
-### 9.4 测试分层
+### 12.4 测试分层
 
 | 层 | 目标 | 工具 |
 |----|------|------|
@@ -607,7 +807,7 @@ datecalendar-cli schedule today
 
 ---
 
-## 10. 概念关联图
+## 13. 概念关联图
 
 ```
                     ┌──────────────┐
@@ -675,4 +875,4 @@ datecalendar-cli schedule today
 
 ---
 
-*文档版本: v2.1 | 更新日期: 2026-06-10 | 变更: 双后端改为多端接入（HTTP API 代理 + SQL.js 降级）*
+*文档版本: v2.2 | 更新日期: 2026-06-20 | 变更: 新增第9节(API认证)、第10节(API文档)、第11节(workbuddy Skill)*

@@ -312,4 +312,163 @@ DateCalendar 使用 Tauri 多窗口架构，共有两个窗口：
 
 ---
 
-*文档版本: v2.1 | 更新日期: 2026-06-19 | 变更: 新增第9节多窗口架构与悬浮窗*
+## 10. CLI 工具
+
+### 核心概念
+
+`datecalendar-cli` 是一个独立的 Rust 二进制程序，通过命令行参数接收指令，通过 stdout 输出 JSON 结果。它直接调用共享的 `TaskService` / `ScheduleService`，不经过 HTTP API。
+
+### 命令结构
+
+```
+datecalendar-cli
+├── task                # 任务管理
+│   ├── list             # 列出所有任务
+│   ├── create          # 创建任务
+│   ├── get <ID>        # 获取单个任务
+│   ├── update <ID>     # 更新任务
+│   ├── delete <ID>     # 删除任务
+│   ├── search <QUERY>  # 搜索任务
+│   └── complete <ID>   # 标记完成
+├── schedule           # 日程管理
+│   ├── day <DATE>      # 查看某天日程
+│   ├── week <START>    # 查看某周日程
+│   ├── create          # 创建日程
+│   ├── update <ID>     # 更新日程
+│   ├── delete <ID>     # 删除日程
+│   └── conflicts      # 检测时间冲突
+└── health             # 检查数据库连接
+```
+
+### 退出码规范
+
+| 退出码 | 含义 |
+|--------|------|
+| `0` | 成功 |
+| `1` | 业务错误（任务不存在、日程冲突等） |
+| `2` | 参数错误（缺少必填参数、格式错误） |
+| `3` | 数据库错误（无法打开数据库、SQL 错误） |
+| `4` | 数据库未找到（`--db-path` 指向不存在的文件） |
+
+### 输出格式
+
+- 默认：`json`（脚本友好，可被 `jq` 解析）
+- `--format table`：人类友好的 ASCII 表格
+- `--format csv`：CSV 格式
+
+### 数据库路径发现
+
+按以下顺序查找 `datecalendar.db`：
+1. `--db-path` 命令行参数
+2. 环境变量 `DATECALENDAR_DB`
+3. 默认位置（按操作系统）
+4. 当前目录 `./datecalendar.db`（开发模式）
+
+---
+
+## 11. API 认证（保留入口，暂不实现）
+
+### 项目定位
+
+DateCalendar 是个人使用的桌面应用，仅在本人电脑上运行：
+- HTTP API 绑定 `127.0.0.1`（仅本机可访问）
+- 无局域网/互联网暴露计划
+- 无多用户场景
+- **当前无需实现认证**
+
+### 核心概念（预留）
+
+HTTP API 使用 Bearer Token 认证，防止未授权访问。Token 是静态 UUID v4，存储在 `settings` 表中。
+
+### 认证流程（预留）
+
+```
+请求 → Authorization: Bearer <token> → 中间件验证 → 通过/拒绝
+```
+
+### Token 管理（预留）
+
+- **生成**：Tauri 应用首次启动时自动生成
+- **获取**：
+  - `GET /api/auth/token?secret=<setup_secret>`（首次，一次性 secret）
+  - `datecalendar-cli auth token`（直接读数据库，最可靠）
+  - 读配置文件 `%APPDATA%\DateCalendar\api_token.txt`
+- **重置**：`datecalendar-cli auth reset-token`
+
+### 白名单路径（预留）
+
+以下路径无需认证：
+- `GET /api/health`：健康检查
+- `GET /api/auth/token?secret=<...>`：获取 token
+
+### 当前状态
+
+| 状态 | 说明 |
+|------|------|
+| ✅ 设计预留 | 认证方案、Token 管理、中间件实现均已设计完成 |
+| ✅ OpenAPI 规范 | API 文档中包含 `BearerAuth` 安全方案定义 |
+| ❌ 暂不实现 | 认证中间件、Token 生成、Token 验证均暂不实现 |
+| ❌ 暂不测试 | 测试计划 `14-api-auth.md` 暂不执行 |
+
+> 未来需要认证时（如局域网访问），再实现设计文档中的方案。
+
+---
+
+## 12. API 文档自动生成
+
+### 核心概念
+
+使用 `utoipa` 库从 Rust 代码中的宏自动生成 OpenAPI 3.0 规范，并通过 `utoipa-swagger-ui` 提供可交互的文档页面。
+
+### 访问方式
+
+| URL | 内容 |
+|-----|------|
+| `http://127.0.0.1:9876/docs` | Swagger UI 交互式文档 |
+| `http://127.0.0.1:9876/api-docs/openapi.json` | OpenAPI 规范（JSON） |
+
+### OpenAPI 规范内容
+
+生成的规范包含：
+- 所有 API 端点的路径、方法、参数、请求体、响应
+- Schema 定义（TaskDto、NewTaskDto、ScheduleDto 等）
+- 安全方案（Bearer Auth）
+- 示例值
+
+---
+
+## 13. workbuddy Skill
+
+### 核心概念
+
+workbuddy Skill 是一个 Markdown 格式的文件（`skill.md`），描述如何调用 DateCalendar 的 API/CLI。它告诉 workbuddy：
+- DateCalendar 的 API 契约（如何创建任务、如何安排日程）
+- 调用方式（HTTP API 还是 CLI）
+- 数据格式（请求体和响应体的字段名、类型）
+
+### Skill 文件结构
+
+```
+skills/
+└── datecalendar/
+    ├── skill.md              # Skill 主文件（workbuddy 读取）
+    ├── README.md             # 人类阅读的文档
+    ├── examples/
+    │   ├── create-task.http  # HTTP 请求示例
+    │   ├── create-task.sh    # CLI 调用示例
+    │   └── response.json     # 响应示例
+    └── schema/
+        └── openapi.json      # OpenAPI 规范
+```
+
+### 典型场景
+
+| 用户指令 | workbuddy 行为 |
+|----------|----------------|
+| "帮我把明天下午 3 点的会议加进去" | 解析时间 → 调用 `schedule create` → 返回确认 |
+| "查看本周的所有待办" | 计算日期范围 → 调用 `schedule week` → 返回日程列表 |
+| "把这个任务标记为完成" | 获取当前任务 ID → 调用 `task complete` → 返回成功 |
+
+---
+
+*文档版本: v2.2 | 更新日期: 2026-06-20 | 变更: 新增第10节(CLI工具)、第11节(API认证)、第12节(API文档)、第13节(workbuddy Skill)*
